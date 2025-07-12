@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>LuckyLoop Lottery</title>
+    <style>
+        :root {
+            --primary: #4CAF50;
+            --secondary: #2196F3;
+            --error: #f44336;
+            --warning: #ff9800;
+        }
+        body {
+            font-family: 'Arial', sans-serif;
+            max-width: 500px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 12px 24px;
+            margin: 8px 0;
+            border: none;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s;
+        }
+        #connectWallet {
+            background: var(--secondary);
+            color: white;
+        }
+        .tier-btn {
+            background: var(--primary);
+            color: white;
+        }
+        #enterLottery {
+            background: var(--warning);
+            color: white;
+            font-size: 1.1em;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .status-box {
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .status-info {
+            background: #e3f2fd;
+            color: var(--secondary);
+        }
+        .status-success {
+            background: #e8f5e9;
+            color: var(--primary);
+        }
+        .status-error {
+            background: #ffebee;
+            color: var(--error);
+        }
+        .wallet-info {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-family: monospace;
+        }
+        #transactionStatus {
+            display: none;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>LuckyLoop Lottery</h1>
+        <div id="networkIndicator" style="padding: 5px 10px; background: #333; color: white; border-radius: 15px;">
+            Not Connected
+        </div>
+    </div>
+
+    <!-- Connection Section -->
+    <div id="connectionSection">
+        <button id="connectWallet">Connect Wallet</button>
+        <div id="walletInfo" class="wallet-info" style="display: none;">
+            Connected: <span id="walletAddress"></span><br>
+            Balance: <span id="walletBalance"></span> ETH<br>
+            Network: <span id="networkName"></span>
+        </div>
+    </div>
+
+    <!-- Lottery Section -->
+    <div id="lotterySection" style="display: none;">
+        <button id="tier1Btn" class="tier-btn">Tier 1: $5 for $100</button>
+        <button id="tier2Btn" class="tier-btn">Tier 2: $50 for $1000</button>
+        <p>Participants: <span id="participantCount">0/100</span> (Tier <span id="currentTierDisplay">1</span>)</p>
+        <button id="enterLottery">Enter Lottery</button>
+    </div>
+
+    <!-- Status Display -->
+    <div id="status" class="status-box status-info">
+        Loading application...
+    </div>
+
+    <!-- Transaction Status -->
+    <div id="transactionStatus">
+        <h3>Transaction Progress</h3>
+        <div id="txHash"></div>
+        <div id="txConfirmations"></div>
+    </div>
+
+    <!-- Ethers.js Loading System -->
+    <script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js"></script>
+    <script>
+        // Fallback loader
+        if(typeof ethers === 'undefined') {
+            document.write('<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"><\/script>');
+        }
+    </script>
+
+    <!-- Main Application -->
+    <script>
+        // ===== CONFIGURATION ===== //
+        const CONTRACT_ADDRESS = "0xc41fe8e0d8f38e94f29d5935ede0be636e6945ddc9122a116d6e5a328ca7b44e";
+        const CHAIN_ID = "0x2105"; // Base Mainnet
+        const ABI = [
+            {
+                "inputs": [{"internalType":"uint256","name":"tier","type":"uint256"}],
+                "name": "enterLottery",
+                "outputs": [],
+                "stateMutability": "payable",
+                "type": "function"
+            },
+            {
+                "inputs": [{"internalType":"uint256","name":"tier","type":"uint256"}],
+                "name": "getParticipantCount",
+                "outputs": [{"internalType":"uint256","name":"","type":"uint256"}],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {"internalType":"uint256","name":"tier","type":"uint256"},
+                    {"internalType":"address","name":"participant","type":"address"}
+                ],
+                "name": "checkEntry",
+                "outputs": [{"internalType":"bool","name":"","type":"bool"}],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {"indexed":false,"internalType":"uint256","name":"tier","type":"uint256"},
+                    {"indexed":true,"internalType":"address","name":"winner","type":"address"}
+                ],
+                "name": "WinnerSelected",
+                "type": "event"
+            }
+        ];
+
+        // ===== STATE ===== //
+        let provider;
+        let contract;
+        let currentAccount = null;
+        let currentTier = 1;
+
+        // ===== INITIALIZATION ===== //
+        window.addEventListener('load', async () => {
+            if (typeof ethers === 'undefined') {
+                showError("Web3 library failed to load. Try refreshing or use Chrome/Firefox.");
+                return;
+            }
+
+            if (!window.ethereum) {
+                showError("Please install MetaMask: <a href='https://metamask.io' target='_blank'>metamask.io</a>");
+                return;
+            }
+
+            provider = new ethers.providers.Web3Provider(window.ethereum);
+            
+            try {
+                const accounts = await provider.listAccounts();
+                if (accounts.length > 0) {
+                    await handleConnection(accounts[0]);
+                }
+                setupEventListeners();
+            } catch (error) {
+                showError("Initialization failed: " + error.message);
+            }
+        });
+
+        // ===== CORE FUNCTIONS ===== //
+        async function handleConnection(account) {
+            currentAccount = account;
+            contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider.getSigner());
+            
+            // Update UI
+            document.getElementById('walletAddress').textContent = 
+                `${account.substring(0, 6)}...${account.substring(38)}`;
+            document.getElementById('walletInfo').style.display = 'block';
+            document.getElementById('lotterySection').style.display = 'block';
+            document.getElementById('connectWallet').disabled = true;
+            
+            // Load initial data
+            updateParticipantCount();
+            showSuccess("Connected successfully");
+        }
+
+        async function updateParticipantCount() {
+            const count = await contract.getParticipantCount(currentTier);
+            document.getElementById('participantCount').textContent = `${count}/100`;
+            document.getElementById('enterLottery').disabled = count >= 100;
+        }
+
+        async function enterLottery() {
+            const entryFee = currentTier === 1 ? "0.00125" : "0.0125";
+            
+            try {
+                const tx = await contract.enterLottery(currentTier, {
+                    value: ethers.utils.parseEther(entryFee),
+                    gasLimit: 950000
+                });
+                
+                showStatus("Transaction submitted...");
+                await tx.wait();
+                showSuccess("Entry confirmed!");
+                updateParticipantCount();
+            } catch (error) {
+                showError("Transaction failed: " + (error.message || "User rejected"));
+            }
+        }
+
+        // ===== UI HELPERS ===== //
+        function showStatus(message) {
+            updateStatus(message, 'status-info');
+        }
+
+        function showSuccess(message) {
+            updateStatus(message, 'status-success');
+        }
+
+        function showError(message) {
+            updateStatus(message, 'status-error');
+        }
+
+        function updateStatus(message, className) {
+            const el = document.getElementById('status');
+            el.innerHTML = message;
+            el.className = `status-box ${className}`;
+        }
+
+        function setupEventListeners() {
+            document.getElementById('connectWallet').addEventListener('click', async () => {
+                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                handleConnection(accounts[0]);
+            });
+
+            document.getElementById('tier1Btn').addEventListener('click', () => {
+                currentTier = 1;
+                document.getElementById('currentTierDisplay').textContent = '1';
+                updateParticipantCount();
+            });
+
+            document.getElementById('tier2Btn').addEventListener('click', () => {
+                currentTier = 2;
+                document.getElementById('currentTierDisplay').textContent = '2';
+                updateParticipantCount();
+            });
+
+            document.getElementById('enterLottery').addEventListener('click', enterLottery);
+        }
+    </script>
+</body>
+</html>
